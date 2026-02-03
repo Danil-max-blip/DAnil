@@ -1,0 +1,105 @@
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from openai import AsyncOpenAI
+
+TELEGRAM_TOKEN = "ВАШ_ТОКЕН"
+OPENAI_API_KEY = "МОДЕЛЬ_АИШКИ"
+OPENAI_BASE_URL = "ЗЕРКАЛО ДЛЯ ОБХОДА БЛОКИРОВКИ В РФ"
+
+# Инициализация
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher()
+client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL
+)
+
+SYSTEM_PROMPT = (
+    "You are a friendly and professional English tutor. "
+    "Your goal is to chat with the user to improve their language skills. "
+    "Follow these rules:\n"
+    "1. If the user makes a grammar, spelling, or stylistic mistake, point it out gently.\n"
+    "2. Explain why it's a mistake in a short and simple way.\n"
+    "3. Provide the corrected version of their sentence.\n"
+    "4. Then, continue the conversation by answering their message or asking a follow-up question.\n"
+    "5. Use a friendly tone. If the user is a beginner, use simple English."
+)
+
+user_histories = {}
+
+async def get_ai_response(user_id, user_text):
+    if user_id not in user_histories:
+        user_histories[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    user_histories[user_id].append({"role": "user", "content": user_text})
+
+    free_models = [
+        "upstage/solar-pro-3:free",
+    ]
+
+    ai_answer = None
+    last_error = ""
+
+    for model_id in free_models:
+        try:
+            logging.info(f"Пробую модель: {model_id}")
+            response = await client.chat.completions.create(
+                model=model_id,
+                messages=user_histories[user_id],
+                timeout=25.0
+            )
+            ai_answer = response.choices[0].message.content
+            if ai_answer:
+                logging.info(f"Успешно ответила модель: {model_id}")
+                break
+        except Exception as e:
+            last_error = str(e)
+            logging.warning(f"Модель {model_id} не сработала: {e}")
+            continue
+    if not ai_answer:
+        raise Exception(f"Все модели сейчас недоступны. Последняя ошибка: {last_error}")
+
+    user_histories[user_id].append({"role": "assistant", "content": ai_answer})
+
+    if len(user_histories[user_id]) > 10:
+        user_histories[user_id] = [user_histories[user_id][0]] + user_histories[user_id][-9:]
+
+    return ai_answer
+
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    await message.answer(
+        "Hello! I'm your AI English Tutor. 🇬🇧\n"
+        "Send me any message in English. I will correct your mistakes and keep the conversation going!"
+    )
+
+@dp.message(Command("reset"))
+async def reset_handler(message: types.Message):
+    user_histories[message.from_user.id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    await message.answer("Our conversation history has been reset. Let's start over!")
+
+@dp.message()
+async def message_handler(message: types.Message):
+    await bot.send_chat_action(message.chat.id, action="typing")
+
+    try:
+        answer = await get_ai_response(message.from_user.id, message.text)
+        await message.answer(answer)
+    except Exception as e:
+        logging.error(f"Критическая ошибка: {e}")
+        await message.answer("Sorry, all free AI servers are busy right now. 😭 Please try again in 5-10 minutes.")
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запущен и готов учить английскому!")
+    await dp.start_polling(bot)
+
+# Запуск программы
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен пользователем")
